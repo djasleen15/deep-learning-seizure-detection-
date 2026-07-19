@@ -66,6 +66,15 @@ export PYTHONPATH="$PWD/src"
 
 ## Example Commands
 
+Download remaining CHB-MIT patients using direct PhysioNet manifest URLs:
+
+```bash
+python scripts/download_chbmit_patients.py \
+  --output-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
+  --start 3 \
+  --end 24
+```
+
 Process all seizure-containing `chb01` files:
 
 ```bash
