@@ -1,12 +1,13 @@
 """Restart-safe direct downloader for the CHB-MIT dataset.
 
 This intentionally uses the PhysioNet RECORDS manifest and direct file URLs
-instead of recursive wget. That makes downloads explicit, resumable at the file
-level, and easier to run in Colab where long jobs can be interrupted.
+instead of recursive wget. Downloads are explicit, resumable at the file level,
+and easier to run in Colab where long jobs can be interrupted.
 """
 
 from __future__ import annotations
 
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -57,35 +58,47 @@ def _download_url(
     retries: int = 3,
     sleep_sec: int = 5,
 ) -> bool:
-    """Download one URL with file-level skip-if-exists logic."""
+    """Download one URL with skip-if-exists and wget resume support."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if output_path.exists() and output_path.stat().st_size > 0:
         print(f"SKIP exists: {output_path}")
         return False
 
-    tmp_path = output_path.with_suffix(output_path.suffix + ".part")
+    part_path = output_path.with_suffix(output_path.suffix + ".part")
+
+    # If an earlier urllib run left a .part file, let wget resume from it.
+    # wget resumes only when the output filename is the partial filename.
+    wget_output_path = part_path if part_path.exists() else output_path
 
     for attempt in range(1, retries + 1):
-        try:
-            print(f"DOWNLOAD attempt {attempt}/{retries}: {url}")
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                with tmp_path.open("wb") as f:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
+        print(f"DOWNLOAD attempt {attempt}/{retries}: {url}")
 
-            tmp_path.replace(output_path)
+        cmd = [
+            "wget",
+            "-c",
+            "--timeout",
+            str(timeout),
+            "--tries",
+            "1",
+            "-O",
+            str(wget_output_path),
+            url,
+        ]
+
+        result = subprocess.run(cmd, check=False)
+
+        if result.returncode == 0:
+            if wget_output_path == part_path:
+                part_path.replace(output_path)
+
             print(f"SAVED: {output_path}")
             return True
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            print(f"WARNING failed attempt {attempt} for {url}: {exc}")
-            if tmp_path.exists():
-                tmp_path.unlink()
-            if attempt < retries:
-                time.sleep(sleep_sec)
+
+        print(f"WARNING failed attempt {attempt} for {url}: wget exit code {result.returncode}")
+
+        if attempt < retries:
+            time.sleep(sleep_sec)
 
     raise RuntimeError(f"Failed to download after {retries} attempts: {url}")
 
@@ -159,4 +172,3 @@ def download_patients(
         results.append(result)
 
     return results
-
