@@ -5,9 +5,9 @@ Important:
 - Validation patients: chb19-chb21
 - Test patients: chb22-chb24
 
-The test split is processed and saved separately only so the final evaluation can
-run later. This script does not print test seizure/non-seizure statistics, because
-test statistics should not inform model development decisions.
+This script saves one processed .npz per EDF file instead of concatenating all
+files into one array. CHB-MIT files can have different channel counts, so
+concatenation is deferred until a later model-input standardization step.
 """
 
 from __future__ import annotations
@@ -47,6 +47,11 @@ def parse_args():
         action="store_true",
         help="Only list selected files; do not load/process EDFs or save arrays.",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Reprocess files even if their per-EDF .npz already exists.",
+    )
     return parser.parse_args()
 
 
@@ -70,27 +75,42 @@ def selected_files_for_patient(data_dir, annotations, patient, include_all_files
     return available_edfs, selected
 
 
-def save_split_arrays(output_dir, split_name, specs_list, labels_list, patient_ids, file_ids):
-    if not specs_list:
-        print(f"No processed files for split {split_name}; skipping save.")
-        return None
+def safe_file_stem(patient, filename):
+    return f"{patient}_{filename.replace('.edf', '')}"
 
-    x = np.concatenate(specs_list, axis=0)
-    y = np.concatenate(labels_list, axis=0)
-    patient_ids = np.array(patient_ids)
-    file_ids = np.array(file_ids)
 
-    save_path = output_dir / f"{split_name}_windows.npz"
+def save_processed_edf(
+    output_dir,
+    split_name,
+    patient,
+    filename,
+    specs,
+    labels,
+    window_times,
+    kept_freqs,
+    kept_times,
+    summary,
+):
+    split_dir = output_dir / split_name
+    split_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = split_dir / f"{safe_file_stem(patient, filename)}_windows.npz"
 
     np.savez_compressed(
         save_path,
-        X=x,
-        y=y,
-        patient_ids=patient_ids,
-        file_ids=file_ids,
+        X=specs,
+        y=labels,
+        window_times=np.array(window_times),
+        kept_freqs=kept_freqs,
+        kept_times=kept_times,
+        patient_id=np.array(patient),
+        file_id=np.array(filename),
+        fs=np.array(summary["fs"]),
+        num_channels=np.array(summary["num_channels"]),
+        duration_sec=np.array(summary["duration_sec"]),
     )
 
-    return save_path, x, y
+    return save_path
 
 
 def resolve_patients_for_split(args, split_name):
@@ -114,7 +134,7 @@ def resolve_patients_for_split(args, split_name):
     return PATIENT_SPLITS[split_name]
 
 
-def process_split(data_dir, output_dir, split_name, patients, include_all_files, dry_run):
+def process_split(data_dir, output_dir, split_name, patients, include_all_files, dry_run, overwrite):
     print(f"\n==============================")
     print(f"Processing split: {split_name}")
     print(f"Patients: {patients}")
@@ -122,12 +142,12 @@ def process_split(data_dir, output_dir, split_name, patients, include_all_files,
 
     annotations = load_all_annotations(data_dir, patients)
 
-    specs_list = []
-    labels_list = []
-    patient_ids = []
-    file_ids = []
     failed_files = []
     processed_summaries = []
+
+    total_windows = 0
+    total_seizure = 0
+    total_nonseizure = 0
 
     for patient in patients:
         available_edfs, filenames = selected_files_for_patient(
@@ -150,25 +170,72 @@ def process_split(data_dir, output_dir, split_name, patients, include_all_files,
             continue
 
         for filename in filenames:
+            split_dir = output_dir / split_name
+            save_path = split_dir / f"{safe_file_stem(patient, filename)}_windows.npz"
+
+            if save_path.exists() and not overwrite:
+                try:
+                    loaded = np.load(save_path, allow_pickle=True)
+                    labels = loaded["y"]
+                    summary = {
+                        "patient": patient,
+                        "filename": filename,
+                        "num_windows": int(len(labels)),
+                        "num_seizure_windows": int(np.sum(labels == 1)),
+                        "num_nonseizure_windows": int(np.sum(labels == 0)),
+                        "num_channels": int(loaded["num_channels"]),
+                        "save_path": str(save_path),
+                        "skipped_existing": True,
+                    }
+                    processed_summaries.append(summary)
+
+                    if split_name != "test":
+                        total_windows += summary["num_windows"]
+                        total_seizure += summary["num_seizure_windows"]
+                        total_nonseizure += summary["num_nonseizure_windows"]
+
+                    print(f"SKIP processed exists: {save_path}")
+                    continue
+                except Exception as exc:
+                    print(f"WARNING could not read existing {save_path}; reprocessing: {exc}")
+
             try:
                 print(f"Processing {patient}/{filename}")
 
-                specs, labels, _, _, _, summary = process_one_edf(
+                specs, labels, window_times, kept_freqs, kept_times, summary = process_one_edf(
                     data_dir,
                     annotations,
                     patient,
                     filename,
                 )
 
-                specs_list.append(specs)
-                labels_list.append(labels)
-                patient_ids.extend([patient] * len(labels))
-                file_ids.extend([filename] * len(labels))
+                save_path = save_processed_edf(
+                    output_dir,
+                    split_name,
+                    patient,
+                    filename,
+                    specs,
+                    labels,
+                    window_times,
+                    kept_freqs,
+                    kept_times,
+                    summary,
+                )
+
+                summary = dict(summary)
+                summary["save_path"] = str(save_path)
+                summary["skipped_existing"] = False
                 processed_summaries.append(summary)
 
                 if split_name != "test":
+                    total_windows += summary["num_windows"]
+                    total_seizure += summary["num_seizure_windows"]
+                    total_nonseizure += summary["num_nonseizure_windows"]
+
                     print(
-                        f"  windows={summary['num_windows']}, "
+                        f"  saved={save_path.name}, "
+                        f"channels={summary['num_channels']}, "
+                        f"windows={summary['num_windows']}, "
                         f"seizure={summary['num_seizure_windows']}, "
                         f"nonseizure={summary['num_nonseizure_windows']}"
                     )
@@ -186,49 +253,38 @@ def process_split(data_dir, output_dir, split_name, patients, include_all_files,
                     }
                 )
 
-    if dry_run:
-        split_summary = {
-            "split": split_name,
-            "patients": patients,
-            "num_patients": len(patients),
-            "dry_run": True,
-        }
-        return split_summary, failed_files
+    summary_path = None
 
-    saved = save_split_arrays(
-        output_dir,
-        split_name,
-        specs_list,
-        labels_list,
-        patient_ids,
-        file_ids,
-    )
+    if not dry_run and processed_summaries:
+        summary_path = output_dir / f"{split_name}_processed_files.csv"
+        with summary_path.open("w") as f:
+            fields = [
+                "patient",
+                "filename",
+                "num_channels",
+                "duration_sec",
+                "num_windows",
+                "num_seizure_windows",
+                "num_nonseizure_windows",
+                "save_path",
+                "skipped_existing",
+            ]
+            f.write(",".join(fields) + "\n")
 
-    if saved is None:
-        total_windows = 0
-        total_seizure = None
-        total_nonseizure = None
-        save_path = None
-    else:
-        save_path, _, y = saved
-        total_windows = int(len(y))
-
-        if split_name == "test":
-            total_seizure = None
-            total_nonseizure = None
-        else:
-            total_seizure = int(np.sum(y == 1))
-            total_nonseizure = int(np.sum(y == 0))
+            for row in processed_summaries:
+                values = [str(row.get(field, "")) for field in fields]
+                f.write(",".join(values) + "\n")
 
     split_summary = {
         "split": split_name,
         "patients": patients,
         "num_patients": len(patients),
-        "num_files_processed": len(processed_summaries),
-        "total_windows": total_windows,
-        "total_seizure_windows": total_seizure,
-        "total_nonseizure_windows": total_nonseizure,
-        "save_path": str(save_path) if save_path else None,
+        "num_files_processed_or_seen": len(processed_summaries),
+        "total_windows": None if split_name == "test" else total_windows,
+        "total_seizure_windows": None if split_name == "test" else total_seizure,
+        "total_nonseizure_windows": None if split_name == "test" else total_nonseizure,
+        "summary_path": str(summary_path) if summary_path else None,
+        "dry_run": dry_run,
     }
 
     return split_summary, failed_files
@@ -254,6 +310,7 @@ def main():
             patients,
             include_all_files=args.include_all_files,
             dry_run=args.dry_run,
+            overwrite=args.overwrite,
         )
 
         all_summaries.append(split_summary)
