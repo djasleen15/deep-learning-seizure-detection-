@@ -33,6 +33,11 @@ def parse_args():
         help="Splits to process. Default avoids test until final evaluation prep.",
     )
     parser.add_argument(
+        "--patients",
+        nargs="*",
+        help="Optional explicit patients for a single split, e.g. chb01 chb02 chb03",
+    )
+    parser.add_argument(
         "--include-all-files",
         action="store_true",
         help="Process all EDF files, not only files with seizures.",
@@ -86,6 +91,27 @@ def save_split_arrays(output_dir, split_name, specs_list, labels_list, patient_i
     )
 
     return save_path, x, y
+
+
+def resolve_patients_for_split(args, split_name):
+    if args.patients:
+        if len(args.splits) != 1:
+            raise ValueError("--patients can only be used with one split at a time")
+
+        invalid_patients = [
+            patient
+            for patient in args.patients
+            if patient not in PATIENT_SPLITS[split_name]
+        ]
+
+        if invalid_patients:
+            raise ValueError(
+                f"Patients {invalid_patients} do not belong to split {split_name}"
+            )
+
+        return args.patients
+
+    return PATIENT_SPLITS[split_name]
 
 
 def process_split(data_dir, output_dir, split_name, patients, include_all_files, dry_run):
@@ -219,7 +245,7 @@ def main():
     all_failed_files = []
 
     for split_name in args.splits:
-        patients = PATIENT_SPLITS[split_name]
+        patients = resolve_patients_for_split(args, split_name)
 
         split_summary, failed_files = process_split(
             data_dir,
