@@ -104,12 +104,14 @@ class ResNetSequenceDataset(Dataset):
         image_size: int = 224,
         max_files: int | None = None,
         channel_labels_by_file: dict[tuple[str, str], list[str]] | None = None,
+        cache_files: bool = True,
     ):
         self.data_dir = Path(data_dir)
         self.common_channels = list(common_channels)
         self.seq_len = seq_len
         self.image_size = image_size
         self.channel_labels_by_file = channel_labels_by_file
+        self.cache_files = cache_files
         self.file_records = []
         self.sequence_index = []
         self.sequence_labels = []
@@ -183,14 +185,18 @@ class ResNetSequenceDataset(Dataset):
         record_idx, start_idx = self.sequence_index[idx]
         record = self.file_records[record_idx]
 
-        if record_idx not in self._file_cache:
-            data = np.load(record["path"], allow_pickle=True)
-            self._file_cache[record_idx] = {
-                "X": data["X"],
-                "y": data["y"],
-            }
+        if self.cache_files:
+            if record_idx not in self._file_cache:
+                data = np.load(record["path"], allow_pickle=True)
+                self._file_cache[record_idx] = {
+                    "X": data["X"],
+                    "y": data["y"],
+                }
 
-        data = self._file_cache[record_idx]
+            data = self._file_cache[record_idx]
+        else:
+            data = np.load(record["path"], allow_pickle=True)
+
         x = data["X"]
         y = data["y"]
 

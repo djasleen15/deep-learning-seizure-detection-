@@ -50,6 +50,11 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-name", default="resnet18_lstm")
     parser.add_argument(
+        "--no-cache-files",
+        action="store_true",
+        help="Disable per-worker .npz caching to reduce RAM usage on full Colab runs.",
+    )
+    parser.add_argument(
         "--train-patients",
         nargs="*",
         help="Optional train-patient subset for sanity runs, e.g. chb01 chb02.",
@@ -199,6 +204,7 @@ def main():
         seq_len=args.seq_len,
         image_size=args.image_size,
         channel_labels_by_file=channel_labels_by_file,
+        cache_files=not args.no_cache_files,
     )
     val_dataset = ResNetSequenceDataset(
         data_dir=args.data_dir,
@@ -207,6 +213,7 @@ def main():
         seq_len=args.seq_len,
         image_size=args.image_size,
         channel_labels_by_file=channel_labels_by_file,
+        cache_files=not args.no_cache_files,
     )
 
     if train_dataset.excluded_files or val_dataset.excluded_files:
@@ -233,6 +240,7 @@ def main():
     print("Train sequences:", len(train_dataset), class_counts(train_labels))
     print("Validation sequences:", len(val_dataset), class_counts(val_labels))
     print("Sequences cross file boundaries: False")
+    print("Dataset file caching:", not args.no_cache_files)
     print(
         "Resize method: flatten common-channel/frequency dimensions, "
         "bilinear interpolate to 224x224, replicate to 3 channels."
