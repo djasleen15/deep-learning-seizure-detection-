@@ -4,4 +4,4 @@ scipy
 matplotlib
 pyedflib
 torch
-
+torchvision
