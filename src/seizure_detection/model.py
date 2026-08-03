@@ -105,6 +105,35 @@ class ResNet18LSTM(nn.Module):
         return self.classifier(final_out).squeeze(1)
 
 
+class FeatureLSTM(nn.Module):
+    """Causal LSTM classifier for precomputed ResNet feature sequences.
+
+    Expected input shape:
+      batch x seq_len x 512
+    """
+
+    def __init__(
+        self,
+        feature_dim: int = 512,
+        lstm_hidden: int = 256,
+        lstm_layers: int = 1,
+    ):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            bidirectional=False,
+        )
+        self.classifier = nn.Linear(lstm_hidden, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        final_out = lstm_out[:, -1, :]
+        return self.classifier(final_out).squeeze(1)
+
+
 def count_parameters(model: nn.Module) -> dict[str, int]:
     """Return total and trainable parameter counts."""
     total = sum(param.numel() for param in model.parameters())
