@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -54,6 +55,20 @@ def parse_args():
         type=int,
         default=0,
         help="Save an in-epoch checkpoint every N batches. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--progress-every-batches",
+        type=int,
+        default=0,
+        help="Print running loss every N batches without saving a checkpoint.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        help="Resume model/optimizer/history from a saved checkpoint.",
+    )
+    parser.add_argument(
+        "--backup-checkpoints-dir",
+        help="Optional persistent directory where checkpoints are copied after saving.",
     )
     parser.add_argument(
         "--no-cache-files",
@@ -156,19 +171,27 @@ def save_checkpoint(
     else:
         checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}_batch_{batch_idx:05d}.pt"
 
-    torch.save(
-        {
-            "epoch": epoch,
-            "batch_idx": batch_idx,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "history": history,
-            "args": vars(args),
-            "parameter_counts": params,
-            "running_train_loss": running_train_loss,
-        },
-        checkpoint_path,
-    )
+    payload = {
+        "epoch": epoch,
+        "batch_idx": batch_idx,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "history": history,
+        "args": vars(args),
+        "parameter_counts": params,
+        "running_train_loss": running_train_loss,
+    }
+
+    torch.save(payload, checkpoint_path)
+
+    if args.backup_checkpoints_dir:
+        backup_dir = Path(args.backup_checkpoints_dir)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        backup_path = backup_dir / checkpoint_path.name
+        shutil.copy2(checkpoint_path, backup_path)
+        latest_path = backup_dir / f"{run_name}_latest.pt"
+        shutil.copy2(checkpoint_path, latest_path)
+
     return checkpoint_path
 
 
@@ -184,6 +207,7 @@ def train_one_epoch_with_batch_checkpoints(
     history,
     args,
     params,
+    start_batch=1,
 ):
     """Train one epoch, optionally saving checkpoints before epoch end."""
     model.train()
@@ -191,6 +215,9 @@ def train_one_epoch_with_batch_checkpoints(
     total_examples = 0
 
     for batch_idx, (batch_x, batch_y) in enumerate(train_loader, start=1):
+        if batch_idx < start_batch:
+            continue
+
         batch_x = batch_x.to(device)
         batch_y = batch_y.to(device)
 
@@ -226,7 +253,24 @@ def train_one_epoch_with_batch_checkpoints(
                 f"checkpoint={checkpoint_path.name}"
             )
 
+        if (
+            args.progress_every_batches > 0
+            and batch_idx % args.progress_every_batches == 0
+        ):
+            running_loss = total_loss / total_examples
+            print(
+                f"Progress: epoch={epoch}, batch={batch_idx}, "
+                f"running_train_loss={running_loss:.6f}"
+            )
+
     return total_loss / total_examples
+
+
+def load_training_checkpoint(path: str | Path, model, optimizer, device):
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return checkpoint
 
 
 def write_history_csv(output_dir: Path, run_name: str, history: list[dict]):
@@ -366,9 +410,30 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 
     history = []
+    start_epoch = 1
+    resume_start_batch = 1
+
+    if args.resume_from:
+        checkpoint = load_training_checkpoint(args.resume_from, model, optimizer, device)
+        history = checkpoint.get("history", [])
+        checkpoint_epoch = int(checkpoint["epoch"])
+        checkpoint_batch = checkpoint.get("batch_idx")
+
+        if checkpoint_batch is None:
+            start_epoch = checkpoint_epoch + 1
+            resume_start_batch = 1
+        else:
+            start_epoch = checkpoint_epoch
+            resume_start_batch = int(checkpoint_batch) + 1
+
+        print("Resumed from:", args.resume_from)
+        print("Resume start epoch:", start_epoch)
+        print("Resume start batch:", resume_start_batch)
+
     start_time = time.time()
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
+        epoch_start_batch = resume_start_batch if epoch == start_epoch else 1
         train_loss = train_one_epoch_with_batch_checkpoints(
             model,
             train_loader,
@@ -381,6 +446,7 @@ def main():
             history,
             args,
             params,
+            start_batch=epoch_start_batch,
         )
         val_loss, val_metrics, _, _, _ = evaluate_model(
             model,
