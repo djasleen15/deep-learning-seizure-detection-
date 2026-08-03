@@ -14,9 +14,7 @@ import math
 from pathlib import Path
 from collections import Counter
 
-import numpy as np
-
-from seizure_detection.data_processing import load_edf
+import pyedflib
 
 
 def parse_args():
@@ -75,12 +73,12 @@ def read_processed_npz_files(processed_dir):
             raise FileNotFoundError(f"Missing processed split folder: {split_dir}")
 
         for npz_path in sorted(split_dir.glob("*.npz")):
-            data = np.load(npz_path, allow_pickle=True)
+            patient, filename = patient_filename_from_processed_npz(npz_path)
             rows.append(
                 {
                     "split": split,
-                    "patient": str(data["patient_id"]),
-                    "filename": str(data["file_id"]),
+                    "patient": patient,
+                    "filename": filename,
                     "npz_path": str(npz_path),
                 }
             )
@@ -88,9 +86,24 @@ def read_processed_npz_files(processed_dir):
     return rows
 
 
+def patient_filename_from_processed_npz(path: Path) -> tuple[str, str]:
+    """Infer patient id and original EDF filename from a processed .npz name."""
+    stem = path.name
+    if not stem.endswith("_windows.npz"):
+        raise ValueError(f"Unexpected processed filename: {path.name}")
+
+    base = stem.removesuffix("_windows.npz")
+    patient, file_stem = base.split("_", 1)
+    return patient, f"{file_stem}.edf"
+
+
 def channel_labels_for_file(data_dir, patient, filename):
-    edf_data = load_edf(data_dir / patient / filename)
-    return list(edf_data["channel_labels"])
+    """Read EDF channel labels without loading signal samples."""
+    reader = pyedflib.EdfReader(str(data_dir / patient / filename))
+    try:
+        return list(reader.getSignalLabels())
+    finally:
+        reader.close()
 
 
 def main():

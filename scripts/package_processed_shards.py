@@ -14,8 +14,6 @@ import json
 import tarfile
 from pathlib import Path
 
-import numpy as np
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -37,8 +35,10 @@ def parse_args():
 
 
 def patient_from_npz(path: Path) -> str:
-    data = np.load(path, allow_pickle=True)
-    return str(data["patient_id"])
+    if not path.name.endswith("_windows.npz"):
+        raise ValueError(f"Unexpected processed filename: {path.name}")
+
+    return path.name.split("_", 1)[0]
 
 
 def grouped_files(split_dir: Path) -> dict[str, list[Path]]:
