@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from pathlib import Path
 
 import numpy as np
@@ -25,15 +26,34 @@ def processed_npz_files(processed_dir: str | Path, split: str) -> list[Path]:
     return sorted((Path(processed_dir) / split).glob("*.npz"))
 
 
+def load_channel_labels_csv(path: str | Path) -> dict[tuple[str, str], list[str]]:
+    """Load saved EDF channel labels from inspect_common_channels.py output."""
+    labels_by_file = {}
+
+    with Path(path).open("r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            labels_by_file[(row["patient"], row["filename"])] = row[
+                "channel_labels"
+            ].split("|")
+
+    return labels_by_file
+
+
 def channel_indices_for_file(
     data_dir: str | Path,
     patient: str,
     filename: str,
     common_channels: list[str],
+    channel_labels_by_file: dict[tuple[str, str], list[str]] | None = None,
 ) -> tuple[list[int] | None, list[str], list[str]]:
     """Map common channel labels onto a raw EDF file's channel order."""
-    edf_data = load_edf(Path(data_dir) / patient / filename)
-    labels = list(edf_data["channel_labels"])
+    if channel_labels_by_file is None:
+        edf_data = load_edf(Path(data_dir) / patient / filename)
+        labels = list(edf_data["channel_labels"])
+    else:
+        labels = list(channel_labels_by_file[(patient, filename)])
+
     label_to_index = {label: idx for idx, label in enumerate(labels)}
     missing = [label for label in common_channels if label not in label_to_index]
 
@@ -83,11 +103,13 @@ class ResNetSequenceDataset(Dataset):
         seq_len: int = 3,
         image_size: int = 224,
         max_files: int | None = None,
+        channel_labels_by_file: dict[tuple[str, str], list[str]] | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.common_channels = list(common_channels)
         self.seq_len = seq_len
         self.image_size = image_size
+        self.channel_labels_by_file = channel_labels_by_file
         self.file_records = []
         self.sequence_index = []
         self.sequence_labels = []
@@ -108,6 +130,7 @@ class ResNetSequenceDataset(Dataset):
                 patient,
                 filename,
                 self.common_channels,
+                channel_labels_by_file=self.channel_labels_by_file,
             )
 
             if missing:

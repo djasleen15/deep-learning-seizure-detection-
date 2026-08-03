@@ -21,6 +21,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from seizure_detection.model import ResNet18LSTM, count_parameters
 from seizure_detection.resnet_input import (
     ResNetSequenceDataset,
+    load_channel_labels_csv,
     load_common_channels,
     processed_npz_files,
 )
@@ -32,6 +33,13 @@ def parse_args():
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--processed-dir", required=True)
     parser.add_argument("--common-channels-json", required=True)
+    parser.add_argument(
+        "--channel-labels-csv",
+        help=(
+            "Optional train_val_channel_labels.csv from inspect_common_channels.py. "
+            "Use this to avoid rereading raw EDF headers during training."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -170,6 +178,11 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     common_channels = load_common_channels(args.common_channels_json)
+    channel_labels_by_file = (
+        load_channel_labels_csv(args.channel_labels_csv)
+        if args.channel_labels_csv
+        else None
+    )
     train_files = processed_npz_files(args.processed_dir, "train")
     val_files = processed_npz_files(args.processed_dir, "val")
 
@@ -185,6 +198,7 @@ def main():
         common_channels=common_channels,
         seq_len=args.seq_len,
         image_size=args.image_size,
+        channel_labels_by_file=channel_labels_by_file,
     )
     val_dataset = ResNetSequenceDataset(
         data_dir=args.data_dir,
@@ -192,6 +206,7 @@ def main():
         common_channels=common_channels,
         seq_len=args.seq_len,
         image_size=args.image_size,
+        channel_labels_by_file=channel_labels_by_file,
     )
 
     if train_dataset.excluded_files or val_dataset.excluded_files:
