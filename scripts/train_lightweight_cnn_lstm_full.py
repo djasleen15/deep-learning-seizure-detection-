@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from seizure_detection.resnet_input import (
     load_common_channels,
     processed_npz_files,
 )
-from seizure_detection.training import evaluate_model, train_one_epoch
+from seizure_detection.training import evaluate_model
 
 
 def parse_args():
@@ -41,6 +42,23 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-name", default="lightweight_cnn_lstm")
+    parser.add_argument(
+        "--checkpoint-every-batches",
+        type=int,
+        default=0,
+        help="Save an in-epoch checkpoint every N batches. Use 0 to disable.",
+    )
+    parser.add_argument(
+        "--progress-every-batches",
+        type=int,
+        default=0,
+        help="Print running train loss every N batches without saving.",
+    )
+    parser.add_argument("--resume-from", help="Resume from a saved checkpoint.")
+    parser.add_argument(
+        "--backup-checkpoints-dir",
+        help="Optional persistent directory where checkpoints and metrics are copied.",
+    )
     parser.add_argument("--train-patients", nargs="*")
     parser.add_argument("--max-train-files", type=int)
     parser.add_argument("--max-val-files", type=int)
@@ -217,23 +235,134 @@ def sampler_diagnostic(sampler: WeightedRandomSampler, labels: np.ndarray) -> di
     }
 
 
-def save_checkpoint(output_dir, run_name, epoch, model, optimizer, history, args, params):
-    checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}.pt"
+def backup_file(path: Path, backup_dir: str | None, latest_name: str | None = None):
+    if not backup_dir:
+        return
+
+    backup_dir = Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, backup_dir / path.name)
+
+    if latest_name:
+        shutil.copy2(path, backup_dir / latest_name)
+
+
+def save_checkpoint(
+    output_dir,
+    run_name,
+    epoch,
+    model,
+    optimizer,
+    history,
+    args,
+    params,
+    batch_idx=None,
+    running_train_loss=None,
+):
+    if batch_idx is None:
+        checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}.pt"
+    else:
+        checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}_batch_{batch_idx:05d}.pt"
+
     torch.save(
         {
             "epoch": epoch,
+            "batch_idx": batch_idx,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "history": history,
             "args": vars(args),
             "parameter_counts": params,
+            "running_train_loss": running_train_loss,
         },
         checkpoint_path,
+    )
+    backup_file(
+        checkpoint_path,
+        args.backup_checkpoints_dir,
+        latest_name=f"{run_name}_latest.pt",
     )
     return checkpoint_path
 
 
-def write_history_csv(output_dir: Path, run_name: str, history: list[dict]):
+def train_one_epoch_with_progress(
+    model,
+    train_loader,
+    criterion,
+    optimizer,
+    device,
+    output_dir,
+    run_name,
+    epoch,
+    history,
+    args,
+    params,
+    start_batch=1,
+):
+    """Train one epoch with optional progress printing and batch checkpoints."""
+    model.train()
+    total_loss = 0
+    total_examples = 0
+
+    for batch_idx, (batch_x, batch_y) in enumerate(train_loader, start=1):
+        if batch_idx < start_batch:
+            continue
+
+        batch_x = batch_x.to(device)
+        batch_y = batch_y.to(device)
+
+        optimizer.zero_grad()
+        logits = model(batch_x)
+        loss = criterion(logits, batch_y)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * batch_x.size(0)
+        total_examples += batch_x.size(0)
+        running_loss = total_loss / total_examples
+
+        if (
+            args.progress_every_batches > 0
+            and batch_idx % args.progress_every_batches == 0
+        ):
+            print(
+                f"Progress: epoch={epoch}, batch={batch_idx}, "
+                f"running_train_loss={running_loss:.6f}"
+            )
+
+        if (
+            args.checkpoint_every_batches > 0
+            and batch_idx % args.checkpoint_every_batches == 0
+        ):
+            checkpoint_path = save_checkpoint(
+                output_dir,
+                run_name,
+                epoch,
+                model,
+                optimizer,
+                history,
+                args,
+                params,
+                batch_idx=batch_idx,
+                running_train_loss=round(float(running_loss), 6),
+            )
+            print(
+                f"Batch checkpoint: epoch={epoch}, batch={batch_idx}, "
+                f"running_train_loss={running_loss:.6f}, "
+                f"checkpoint={checkpoint_path.name}"
+            )
+
+    return total_loss / total_examples
+
+
+def load_training_checkpoint(path: str | Path, model, optimizer, device):
+    checkpoint = torch.load(path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    return checkpoint
+
+
+def write_history_csv(output_dir: Path, run_name: str, history: list[dict], backup_dir=None):
     path = output_dir / f"{run_name}_metrics.csv"
     fields = [
         "epoch",
@@ -255,6 +384,7 @@ def write_history_csv(output_dir: Path, run_name: str, history: list[dict]):
         for row in history:
             f.write(",".join(str(row.get(field, "")) for field in fields) + "\n")
 
+    backup_file(path, backup_dir, latest_name=f"{run_name}_metrics_latest.csv")
     return path
 
 
@@ -352,12 +482,49 @@ def main():
     print("Optimizer: Adam")
     print("Learning rate:", args.learning_rate)
     print("Epochs:", args.epochs)
+    print("Progress interval:", args.progress_every_batches)
+    print("Batch checkpoint interval:", args.checkpoint_every_batches)
+    print("Backup checkpoints dir:", args.backup_checkpoints_dir)
 
     history = []
+    start_epoch = 1
+    resume_start_batch = 1
+
+    if args.resume_from:
+        checkpoint = load_training_checkpoint(args.resume_from, model, optimizer, device)
+        history = checkpoint.get("history", [])
+        checkpoint_epoch = int(checkpoint["epoch"])
+        checkpoint_batch = checkpoint.get("batch_idx")
+
+        if checkpoint_batch is None:
+            start_epoch = checkpoint_epoch + 1
+            resume_start_batch = 1
+        else:
+            start_epoch = checkpoint_epoch
+            resume_start_batch = int(checkpoint_batch) + 1
+
+        print("Resumed from:", args.resume_from)
+        print("Resume start epoch:", start_epoch)
+        print("Resume start batch:", resume_start_batch)
+
     start_time = time.time()
 
-    for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    for epoch in range(start_epoch, args.epochs + 1):
+        epoch_start_batch = resume_start_batch if epoch == start_epoch else 1
+        train_loss = train_one_epoch_with_progress(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            output_dir,
+            args.run_name,
+            epoch,
+            history,
+            args,
+            params,
+            start_batch=epoch_start_batch,
+        )
         val_loss, val_metrics, _, _, _ = evaluate_model(
             model,
             val_loader,
@@ -383,7 +550,12 @@ def main():
             args,
             params,
         )
-        metrics_path = write_history_csv(output_dir, args.run_name, history)
+        metrics_path = write_history_csv(
+            output_dir,
+            args.run_name,
+            history,
+            backup_dir=args.backup_checkpoints_dir,
+        )
 
         print(
             f"Epoch {epoch}: "
