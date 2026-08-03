@@ -25,7 +25,7 @@ from seizure_detection.resnet_input import (
     load_common_channels,
     processed_npz_files,
 )
-from seizure_detection.training import evaluate_model, train_one_epoch
+from seizure_detection.training import evaluate_model
 
 
 def parse_args():
@@ -49,6 +49,12 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-name", default="resnet18_lstm")
+    parser.add_argument(
+        "--checkpoint-every-batches",
+        type=int,
+        default=0,
+        help="Save an in-epoch checkpoint every N batches. Use 0 to disable.",
+    )
     parser.add_argument(
         "--no-cache-files",
         action="store_true",
@@ -133,20 +139,94 @@ def sampler_diagnostic(sampler: WeightedRandomSampler, labels: np.ndarray) -> di
     }
 
 
-def save_checkpoint(output_dir, run_name, epoch, model, optimizer, history, args, params):
-    checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}.pt"
+def save_checkpoint(
+    output_dir,
+    run_name,
+    epoch,
+    model,
+    optimizer,
+    history,
+    args,
+    params,
+    batch_idx=None,
+    running_train_loss=None,
+):
+    if batch_idx is None:
+        checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}.pt"
+    else:
+        checkpoint_path = output_dir / f"{run_name}_epoch_{epoch:02d}_batch_{batch_idx:05d}.pt"
+
     torch.save(
         {
             "epoch": epoch,
+            "batch_idx": batch_idx,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "history": history,
             "args": vars(args),
             "parameter_counts": params,
+            "running_train_loss": running_train_loss,
         },
         checkpoint_path,
     )
     return checkpoint_path
+
+
+def train_one_epoch_with_batch_checkpoints(
+    model,
+    train_loader,
+    criterion,
+    optimizer,
+    device,
+    output_dir,
+    run_name,
+    epoch,
+    history,
+    args,
+    params,
+):
+    """Train one epoch, optionally saving checkpoints before epoch end."""
+    model.train()
+    total_loss = 0
+    total_examples = 0
+
+    for batch_idx, (batch_x, batch_y) in enumerate(train_loader, start=1):
+        batch_x = batch_x.to(device)
+        batch_y = batch_y.to(device)
+
+        optimizer.zero_grad()
+        logits = model(batch_x)
+        loss = criterion(logits, batch_y)
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item() * batch_x.size(0)
+        total_examples += batch_x.size(0)
+
+        if (
+            args.checkpoint_every_batches > 0
+            and batch_idx % args.checkpoint_every_batches == 0
+        ):
+            running_loss = total_loss / total_examples
+            checkpoint_path = save_checkpoint(
+                output_dir,
+                run_name,
+                epoch,
+                model,
+                optimizer,
+                history,
+                args,
+                params,
+                batch_idx=batch_idx,
+                running_train_loss=round(float(running_loss), 6),
+            )
+            print(
+                f"Batch checkpoint: epoch={epoch}, batch={batch_idx}, "
+                f"running_train_loss={running_loss:.6f}, "
+                f"checkpoint={checkpoint_path.name}"
+            )
+
+    return total_loss / total_examples
 
 
 def write_history_csv(output_dir: Path, run_name: str, history: list[dict]):
@@ -280,6 +360,7 @@ def main():
     print("Optimizer: Adam")
     print("Learning rate:", args.learning_rate)
     print("Epochs:", args.epochs)
+    print("Batch checkpoint interval:", args.checkpoint_every_batches)
 
     criterion = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
@@ -288,7 +369,19 @@ def main():
     start_time = time.time()
 
     for epoch in range(1, args.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
+        train_loss = train_one_epoch_with_batch_checkpoints(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            output_dir,
+            args.run_name,
+            epoch,
+            history,
+            args,
+            params,
+        )
         val_loss, val_metrics, _, _, _ = evaluate_model(
             model,
             val_loader,
