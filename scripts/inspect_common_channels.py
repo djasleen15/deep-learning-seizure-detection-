@@ -12,6 +12,8 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
+
 from seizure_detection.data_processing import load_edf
 
 
@@ -24,6 +26,14 @@ def parse_args():
         help="Path to processed_patient_splits folder",
     )
     parser.add_argument("--output-dir", required=True, help="Where channel reports are saved")
+    parser.add_argument(
+        "--from-npz-files",
+        action="store_true",
+        help=(
+            "Inspect every .npz in processed train/val split folders instead of "
+            "using summary CSVs. Useful when summaries were created in staged runs."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -34,6 +44,28 @@ def read_processed_summary(summary_path):
         reader = csv.DictReader(f)
         for row in reader:
             rows.append(row)
+
+    return rows
+
+
+def read_processed_npz_files(processed_dir):
+    rows = []
+
+    for split in ["train", "val"]:
+        split_dir = processed_dir / split
+        if not split_dir.exists():
+            raise FileNotFoundError(f"Missing processed split folder: {split_dir}")
+
+        for npz_path in sorted(split_dir.glob("*.npz")):
+            data = np.load(npz_path, allow_pickle=True)
+            rows.append(
+                {
+                    "split": split,
+                    "patient": str(data["patient_id"]),
+                    "filename": str(data["file_id"]),
+                    "npz_path": str(npz_path),
+                }
+            )
 
     return rows
 
@@ -51,22 +83,25 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    summary_paths = [
-        processed_dir / "train_processed_files.csv",
-        processed_dir / "val_processed_files.csv",
-    ]
+    if args.from_npz_files:
+        all_rows = read_processed_npz_files(processed_dir)
+    else:
+        summary_paths = [
+            processed_dir / "train_processed_files.csv",
+            processed_dir / "val_processed_files.csv",
+        ]
 
-    all_rows = []
+        all_rows = []
 
-    for summary_path in summary_paths:
-        if not summary_path.exists():
-            raise FileNotFoundError(f"Missing processed summary: {summary_path}")
+        for summary_path in summary_paths:
+            if not summary_path.exists():
+                raise FileNotFoundError(f"Missing processed summary: {summary_path}")
 
-        split = "train" if "train" in summary_path.name else "val"
+            split = "train" if "train" in summary_path.name else "val"
 
-        for row in read_processed_summary(summary_path):
-            row["split"] = split
-            all_rows.append(row)
+            for row in read_processed_summary(summary_path):
+                row["split"] = split
+                all_rows.append(row)
 
     if not all_rows:
         raise RuntimeError("No processed train/validation rows found.")
