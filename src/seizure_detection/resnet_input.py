@@ -90,7 +90,9 @@ class ResNetSequenceDataset(Dataset):
         self.image_size = image_size
         self.file_records = []
         self.sequence_index = []
+        self.sequence_labels = []
         self.excluded_files = []
+        self._file_cache = {}
 
         selected_files = [Path(path) for path in npz_files]
         if max_files is not None:
@@ -147,6 +149,9 @@ class ResNetSequenceDataset(Dataset):
 
             for start_idx in range(0, len(y) - seq_len + 1):
                 self.sequence_index.append((record_idx, start_idx))
+                end_idx = start_idx + seq_len
+                label = 1 if np.any(y[start_idx:end_idx] == 1) else 0
+                self.sequence_labels.append(label)
 
     def __len__(self) -> int:
         return len(self.sequence_index)
@@ -155,7 +160,14 @@ class ResNetSequenceDataset(Dataset):
         record_idx, start_idx = self.sequence_index[idx]
         record = self.file_records[record_idx]
 
-        data = np.load(record["path"], allow_pickle=True)
+        if record_idx not in self._file_cache:
+            data = np.load(record["path"], allow_pickle=True)
+            self._file_cache[record_idx] = {
+                "X": data["X"],
+                "y": data["y"],
+            }
+
+        data = self._file_cache[record_idx]
         x = data["X"]
         y = data["y"]
 
