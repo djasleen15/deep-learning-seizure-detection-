@@ -7,11 +7,10 @@ import csv
 from pathlib import Path
 
 import numpy as np
+import pyedflib
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-
-from seizure_detection.data_processing import load_edf
 
 
 def load_common_channels(path: str | Path) -> list[str]:
@@ -48,11 +47,11 @@ def channel_indices_for_file(
     channel_labels_by_file: dict[tuple[str, str], list[str]] | None = None,
 ) -> tuple[list[int] | None, list[str], list[str]]:
     """Map common channel labels onto a raw EDF file's channel order."""
-    if channel_labels_by_file is None:
-        edf_data = load_edf(Path(data_dir) / patient / filename)
-        labels = list(edf_data["channel_labels"])
+    key = (patient, filename)
+    if channel_labels_by_file is None or key not in channel_labels_by_file:
+        labels = read_edf_channel_labels(Path(data_dir) / patient / filename)
     else:
-        labels = list(channel_labels_by_file[(patient, filename)])
+        labels = list(channel_labels_by_file[key])
 
     label_to_index = {label: idx for idx, label in enumerate(labels)}
     missing = [label for label in common_channels if label not in label_to_index]
@@ -61,6 +60,15 @@ def channel_indices_for_file(
         return None, missing, labels
 
     return [label_to_index[label] for label in common_channels], [], labels
+
+
+def read_edf_channel_labels(path: str | Path) -> list[str]:
+    """Read EDF signal labels without loading signal samples."""
+    reader = pyedflib.EdfReader(str(path))
+    try:
+        return list(reader.getSignalLabels())
+    finally:
+        reader.close()
 
 
 def resize_window_to_resnet_rgb(window: np.ndarray, image_size: int = 224) -> torch.Tensor:
