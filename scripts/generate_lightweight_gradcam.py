@@ -158,7 +158,7 @@ def select_examples(preds: pd.DataFrame) -> pd.DataFrame:
         raise RuntimeError("No false-negative examples found.")
     fn = fn_candidates.iloc[0].copy()
 
-    selected = pd.DataFrame([tp, fp, fn]).reset_index().rename(columns={"index": "sequence_row"})
+    selected = pd.DataFrame([tp, fp, fn]).reset_index(drop=True)
     selected.insert(0, "example_type", ["true_positive", "false_positive", "false_negative"])
     return selected
 
