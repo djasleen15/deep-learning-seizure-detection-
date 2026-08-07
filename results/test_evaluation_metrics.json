@@ -1,0 +1,30 @@
+{
+  "model": "lightweight_cnn_lstm_chb01_to_chb06_val_epoch_04.pt",
+  "test_patients": ["chb22", "chb23", "chb24"],
+  "num_test_files_input": 18,
+  "num_test_files_used": 18,
+  "excluded_files": 0,
+  "num_test_sequences": 21526,
+  "num_test_seizure_sequences": 353,
+  "num_test_nonseizure_sequences": 21173,
+  "metrics": {
+    "TP": 131,
+    "TN": 20734,
+    "FP": 439,
+    "FN": 222,
+    "sensitivity_recall": 0.3711,
+    "specificity": 0.9793,
+    "precision": 0.2298,
+    "f1": 0.2839,
+    "accuracy": 0.9693
+  },
+  "event_level_detection": {
+    "independent_annotated_events": 26,
+    "events_with_at_least_one_flagged_sequence": 26,
+    "event_detection_rate": 1.0,
+    "average_overlapping_sequences_per_event": 13.58,
+    "overlapping_sequences_min": 6,
+    "overlapping_sequences_max": 31,
+    "average_per_event_flagging_fraction": 0.3473
+  }
+}

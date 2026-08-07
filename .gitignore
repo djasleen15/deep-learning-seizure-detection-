@@ -121,11 +121,26 @@ ipython_config.py
 
 # Project data and generated artifacts
 data/
+downloads/
 processed/
+processed_patient_splits/
+processed_shards/
+model_input_outputs/
+model_training_outputs/
+baseline_outputs/
+test_outputs/
+gradcam_outputs/
+lightweight_checkpoint_backups/
 models/
 report_figures/
+*.edf
+*.edf.part
 *.npz
 *.pt
+*.pth
+*.ckpt
+*.npy
+*.mat
 .DS_Store
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
 # pixi.lock

@@ -1,0 +1,4 @@
+num_train_patients,num_train_sequences,num_seizure_sequences,final_epoch,final_epoch_F1,final_epoch_sensitivity,final_epoch_specificity,final_epoch_precision,best_epoch,best_epoch_F1,wall_clock_seconds
+3,14286,300,4,0.2657,0.1681,0.9980,0.6333,1,0.4498,2447.4
+6,51648,625,4,0.4802,0.4027,0.9943,0.5948,3,0.5030,
+12,99385,1860,4,0.4201,0.3142,0.9962,0.6339,2,0.4372,12658.8

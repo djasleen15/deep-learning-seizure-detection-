@@ -1,9 +1,10 @@
-"""Lightweight CNN-LSTM model used for the progress-report proof of concept."""
+"""CNN-LSTM model definitions for seizure detection."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from torchvision.models import ResNet18_Weights, resnet18
 
 
 class SmallCNNLSTM(nn.Module):
@@ -51,3 +52,90 @@ class SmallCNNLSTM(nn.Module):
         final_out = lstm_out[:, -1, :]
         return self.classifier(final_out).squeeze(1)
 
+
+class ResNet18LSTM(nn.Module):
+    """Pretrained ResNet-18 feature extractor followed by a causal LSTM.
+
+    Expected input shape:
+      batch x seq_len x 3 x 224 x 224
+
+    ResNet-18 produces one 512-dimensional feature vector per 4-second
+    spectrogram image. The unidirectional LSTM then models the chronological
+    3-window sequence and emits one seizure/non-seizure logit.
+    """
+
+    def __init__(
+        self,
+        lstm_hidden: int = 256,
+        lstm_layers: int = 1,
+        pretrained: bool = True,
+        freeze_resnet: bool = False,
+    ):
+        super().__init__()
+
+        weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
+        backbone = resnet18(weights=weights)
+        feature_dim = backbone.fc.in_features
+        backbone.fc = nn.Identity()
+
+        if freeze_resnet:
+            for param in backbone.parameters():
+                param.requires_grad = False
+
+        self.resnet = backbone
+        self.lstm = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            bidirectional=False,
+        )
+        self.classifier = nn.Linear(lstm_hidden, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return one logit per sequence."""
+        batch_size, seq_len, channels, height, width = x.shape
+        x = x.reshape(batch_size * seq_len, channels, height, width)
+
+        features = self.resnet(x)
+        features = features.reshape(batch_size, seq_len, -1)
+
+        lstm_out, _ = self.lstm(features)
+        final_out = lstm_out[:, -1, :]
+        return self.classifier(final_out).squeeze(1)
+
+
+class FeatureLSTM(nn.Module):
+    """Causal LSTM classifier for precomputed ResNet feature sequences.
+
+    Expected input shape:
+      batch x seq_len x 512
+    """
+
+    def __init__(
+        self,
+        feature_dim: int = 512,
+        lstm_hidden: int = 256,
+        lstm_layers: int = 1,
+    ):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=lstm_hidden,
+            num_layers=lstm_layers,
+            batch_first=True,
+            bidirectional=False,
+        )
+        self.classifier = nn.Linear(lstm_hidden, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        lstm_out, _ = self.lstm(x)
+        final_out = lstm_out[:, -1, :]
+        return self.classifier(final_out).squeeze(1)
+
+
+def count_parameters(model: nn.Module) -> dict[str, int]:
+    """Return total and trainable parameter counts."""
+    total = sum(param.numel() for param in model.parameters())
+    trainable = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    return {"total_parameters": total, "trainable_parameters": trainable}
