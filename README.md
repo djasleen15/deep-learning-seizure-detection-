@@ -1,120 +1,141 @@
-# EEG Seizure Detection
+# Automated Seizure Detection from EEG
 
-This repository contains the code used for the APS360 progress-report pipeline for
-EEG seizure detection on the CHB-MIT dataset.
+A patient-level, leakage-aware seizure detection pipeline built on the
+CHB-MIT Scalp EEG Database, developed as an APS360 course project at the
+University of Toronto and as a portfolio piece for research applications.
 
-## What This Code Covers
+## Overview
 
-- Parse CHB-MIT seizure annotations from patient summary files.
-- Load EDF recordings.
-- Preprocess EEG using a 0.5-40 Hz bandpass filter and common average reference.
-- Segment EEG into non-overlapping 4-second windows.
-- Label windows using annotation overlap, including windows that straddle seizure onset.
-- Convert windows to log-magnitude STFT spectrograms.
-- Build 12-second sequences from three consecutive 4-second spectrograms.
-- Run a hand-coded amplitude-threshold baseline.
-- Train a lightweight CNN-LSTM proof-of-concept model.
-- Evaluate cross-patient generalization without retraining.
+This project builds an automated seizure detection system that classifies
+12-second EEG sequences, made from three consecutive 4-second windows, as
+seizure or non-seizure. It also includes Grad-CAM interpretability to highlight
+the time-frequency regions that contributed to a prediction.
 
-## Progress-Report Results From Colab
+**Core contribution:** rather than proposing a novel architecture, this project
+evaluates how detection performance scales with the number of training patients
+under a strict patient-level train/validation/test split. This is motivated by
+evidence that much prior work on this dataset does not rigorously separate
+patients between training and evaluation, risking inflated performance estimates
+from data leakage.
 
-The report experiments were run in Colab on a small subset:
+## Key Results
 
-- Training file: `chb01_03.edf`
-- Within-patient validation file: `chb01_04.edf`
-- Cross-patient check: `chb02_16.edf`
+| Model | Split | Sensitivity | Specificity | Precision | F1 |
+|---|---|---:|---:|---:|---:|
+| Baseline amplitude threshold | Validation | 0.189 | 0.999 | 0.712 | 0.298 |
+| CNN-LSTM, 6 train patients | Validation | 0.403 | 0.994 | 0.595 | 0.480 |
+| CNN-LSTM, 6 train patients | Held-out test | 0.371 | 0.979 | 0.230 | 0.284 |
 
-Expanded data processing was also run on all seizure-containing `chb01` files:
+The drop from validation F1 to held-out test F1 is a central result: performance
+measured before the final unseen-patient evaluation overstated generalization.
 
-- 7 EDF files
-- 5981 total 4-second windows
-- 5866 non-seizure windows
-- 115 seizure windows
+Patient-count scaling on the fixed validation set was non-monotonic:
 
-Baseline result on the two-file subset:
+| Train patients | Validation F1 |
+|---:|---:|
+| 3 | 0.266 |
+| 6 | 0.480 |
+| 12 | 0.420 |
 
-- Threshold rule: mean + 2.5 standard deviations
-- Minimum channels: 2
-- Minimum duration: 2 seconds
-- F1: 0.1039
-- Sensitivity: 0.5000
-- Specificity: 0.9271
+## Data
 
-Lightweight CNN-LSTM final epoch result:
+This project uses the
+[CHB-MIT Scalp EEG Database](https://physionet.org/content/chbmit/1.0.0/), a
+PhysioNet pediatric scalp EEG dataset sampled at 256 Hz.
 
-- F1: 0.3279
-- Sensitivity: 1.0000
-- Specificity: 0.9538
+The split was locked at the patient level:
 
-Cross-patient check on `chb02_16.edf`:
+- Train: `chb01`-`chb18`
+- Validation: `chb19`-`chb21`
+- Held-out test: `chb22`-`chb24`
 
-- F1: 0.2840
-- Sensitivity: 1.0000
-- Specificity: 0.4579
+Raw EDF files and processed NumPy arrays are not included in this repository.
+
+## Pipeline
+
+1. **Preprocessing:** 0.5-40 Hz bandpass filtering, common average reference,
+   non-overlapping 4-second windows, and seizure labels assigned by at least
+   1 second of overlap with an annotated seizure interval.
+2. **Channel standardization:** 22 channels selected using train/validation
+   metadata only, with test files mapped to this frozen list.
+3. **Spectrogram conversion:** log-magnitude STFT with 0-40 Hz retained.
+4. **Sequence construction:** sliding 3-window sequences, producing one
+   12-second sequence-level label.
+5. **Baseline:** hand-coded amplitude-threshold detector with no learned
+   parameters.
+6. **Primary model:** lightweight CNN-LSTM with 2 convolutional layers, a
+   128-dimensional CNN feature vector, a causal unidirectional LSTM with hidden
+   size 64, and a binary classifier.
+7. **Interpretability:** Grad-CAM applied to the final convolutional layer.
+
+The originally proposed ResNet-18 + LSTM architecture was implemented and
+forward-pass verified, but full fine-tuning was infeasible under available
+free-tier Colab runtime constraints. The final report describes this
+infrastructure limitation and the resulting lightweight CNN-LSTM choice.
+
+## Repository Structure
+
+- `src/seizure_detection/` - reusable pipeline modules
+- `scripts/` - command-line entry points for download, processing, training,
+  evaluation, and visualization
+- `report/` - progress/final reports and final report figures
+- `results/` - compact summary metrics used in the report
+- `notebooks/` - optional exploratory notebooks
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
-```
-
-If running scripts from the repo root, set:
-
-```bash
 export PYTHONPATH="$PWD/src"
 ```
 
 ## Example Commands
 
-Download remaining CHB-MIT patients using direct PhysioNet manifest URLs:
+Download CHB-MIT patients:
 
 ```bash
 python scripts/download_chbmit_patients.py \
-  --output-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
-  --start 3 \
+  --output-dir data/chb-mit-data \
+  --start 1 \
   --end 24
 ```
 
-Process all seizure-containing `chb01` files:
+Process patient-level splits:
 
 ```bash
-python scripts/process_chb01_seizure_files.py \
-  --data-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
-  --output-dir processed
+python scripts/process_patient_splits.py \
+  --data-dir data/chb-mit-data \
+  --output-dir data/chb-mit-data/processed_patient_splits \
+  --splits train val
 ```
 
-Train the lightweight CNN-LSTM on the two-file progress-report subset:
+Run the full-scale baseline:
 
 ```bash
-python scripts/train_tiny_cnn_lstm.py \
-  --data-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
+python scripts/run_full_baseline.py \
+  --data-dir data/chb-mit-data \
+  --processed-dir data/chb-mit-data/processed_patient_splits \
+  --output-dir results
+```
+
+Train the lightweight CNN-LSTM:
+
+```bash
+python scripts/train_lightweight_cnn_lstm_full.py \
+  --data-dir data/chb-mit-data \
+  --processed-dir data/chb-mit-data/processed_patient_splits \
+  --common-channels-json data/chb-mit-data/model_input_outputs/common_train_val_channels.json \
+  --channel-labels-csv data/chb-mit-data/model_input_outputs/train_val_channel_labels.csv \
   --output-dir models \
-  --epochs 5
+  --train-patients chb01 chb02 chb03 chb04 chb05 chb06 \
+  --epochs 4
 ```
 
-Run the amplitude-threshold baseline grid on `chb01_04.edf`:
+## Reports
 
-```bash
-python scripts/run_baseline.py \
-  --data-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
-  --patient chb01 \
-  --filename chb01_04.edf \
-  --output-dir report_figures
-```
+- [Final Report](report/final_report.pdf)
+- [Progress Report](report/progress_report.pdf)
 
-Evaluate the trained model on unseen patient `chb02_16.edf`:
+## Author
 
-```bash
-python scripts/evaluate_cross_patient.py \
-  --data-dir /content/drive/MyDrive/APS360_seizure_project/chb-mit-data \
-  --checkpoint models/small_cnn_lstm_chb01_tiny_subset.pt \
-  --patient chb02 \
-  --filename chb02_16.edf \
-  --output-dir report_figures
-```
-
-## Notes
-
-The lightweight CNN-LSTM is a progress-report proof of concept. The final project
-plan is to scale training across more patients and evaluate strict patient-level
-generalization as the main experimental question.
+Jasleen Dhaliwal - University of Toronto, Computer Engineering
